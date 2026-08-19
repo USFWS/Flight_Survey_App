@@ -1,0 +1,23 @@
+# ── Local startup scripts (kept on local machines only) ──
+*.bat
+*.cmd
+*.sh
+
+# ── The local sample data folder (early prototype) ──
+SurveyData/
+
+# ── Python ──
+__pycache__/
+
+# ── OneDrive / sync artifacts ──
+*.tmp
+~$*
+
+# ── output products ──
+*.csv
+*.pdf
+*.html
+*.tex
+
+# required external dependancies
+*.exe
