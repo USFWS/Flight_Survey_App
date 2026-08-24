@@ -1,102 +1,209 @@
-# Cockpit Data Logger Hardware Module
-**Firmware Version:** 2.0 | **Target Platform:** Teensy 4.1 System Architecture
+# Cockpit Data Logger — Prototype Hardware Module
 
-**Note: this hardware has not beed tested or reviewed by an expert. It was fully design by Google's Gemini AI agent. If you have experience with these designs, please contact the project maintainer.**
+**Firmware:** prototype (see `hardware.cpp`) | **Target:** Teensy 4.1 + Audio Adaptor (Rev D)
 
-This sub-module provides the blueprint, Bill of Materials (BOM), and wiring matrix to build the standalone physical logging unit for the cockpit. 
-
-The accompanying Teensy production firmware can be found in the separate source file [`hardware.cpp`](./hardware.cpp) within this directory.
+> ## ⚠️ NOT AIRWORTHY — BENCH PROTOTYPE ONLY
+>
+> **This device and firmware have NOT been reviewed or tested by any qualified
+> avionics or aviation professional. Everything here is an unverified prototype
+> intended for bench development only.**
+>
+> Before any use in or near an aircraft, this design MUST be reviewed and
+> approved by appropriate experts. In particular:
+>
+> - **Do NOT connect this device to aircraft electrical systems** (no cigarette/
+>   ship-bus power in flight). Run it on its own internal battery, electrically
+>   isolated from the airframe.
+> - **Do NOT connect this device to a shared aircraft intercom/audio panel.**
+>   The intended topology is **one device per person, in-line with that one
+>   person's own headset**, with **galvanic isolation** on the audio path. The
+>   isolation scheme shown below is a *placeholder concept* and must be
+>   specified and verified by a qualified reviewer.
+> - **Do NOT permanently install this in an aircraft.** It is a temporary,
+>   removable unit used only during survey missions (velcro / clamp mount).
+> - Tapping the aircraft's existing PTT or wiring into certified equipment is a
+>   regulated modification and is explicitly out of scope. Use a **separate,
+>   added momentary button**.
+>
+> An earlier version of this document was produced entirely by an AI agent with
+> no expert review. This corrected version is still AI-assisted and still
+> requires expert sign-off.
 
 ---
 
-## 1. Hardware Assembly Blueprint
+## 1. What this device does
+
+A self-contained, single-person voice + position logger for aerial wildlife
+surveys. Each pilot or observer uses **their own device**, keeping their WAV
+files and GPS track separate.
+
+- Records mono voice clips from the user's headset mic to microSD as `.wav`.
+- Filenames encode local time of day: `HHMMSSCC.WAV` (CC = hundredths of a
+  second), so files sort chronologically and rarely collide.
+- Logs a GPS track (`track.csv`) with UTC datetime, fractional seconds, and
+  local seconds-past-midnight.
+- **Single click** (either button) = start/stop recording.
+- **Double click** = play back the most recent clip to the headset.
+- Location of each clip is resolved later in post-processing by matching the
+  clip's timestamp to the nearest-in-time GPS track point.
+
+---
+
+## 2. System block diagram (conceptual)
 
 ```text
-       +-------------------------------------------------------+
+   ┌──────────────────────────────────────────────────────────────┐
+   │                    ISOLATED FROM AIRFRAME                      │
+   │  (device runs on its own battery; no shared ground with ship)  │
+   │                                                                │
+   │   ┌───────────────┐        ┌──────────────────────────────┐   │
+   │   │  AA Battery    │  5V    │        Teensy 4.1            │   │
+   │   │  Pack (NiMH)   ├───────►│  + Audio Adaptor (SGTL5000)  │   │
+   │   │  + protection  │  VIN   │  + built-in microSD slot     │   │
+   │   └───────────────┘        │                              │   │
+   │                            │  Serial1 (RX0/TX1) ──────────┼───┐
+   │   ┌───────────────┐  5V    │  Pin 10  ◄── Yoke button     │   │
+   │   │  microSD card  │◄──────►│  Pin  9  ◄── Observer button │   │
+   │   └───────────────┘        │  Pin  2  ──► Green LED (lock) │   │
+   │                            │  Pin  3  ──► Red LED (rec/err)│   │
+   │                            └───────────┬──────────────────┘   │
+   │                                        │ I2S audio            │
+   │                            ┌───────────▼──────────────────┐   │
+   │                            │  Audio Adaptor MIC/HP jack    │   │
+   │                            │                              │   │
+   │        ┌───────────────────┤  ◄── mic in / hp out ──►     │   │
+   │        │  AUDIO ISOLATION   │                              │   │
+   │        │  (transformers /   │  *** PLACEHOLDER — must be   │   │
+   │        │   isolated codec)  │      specified by reviewer ***│  │
+   │        └─────────┬─────────┘└──────────────────────────────┘  │
+   │                  │                                             │
+   └──────────────────┼─────────────────────────────────────────┬─┘
+                      │                                          │
+              ┌───────▼────────┐                        ┌────────▼───────┐
+              │ User's headset │                        │  GPS module    │
+              │ (mic + phones) │                        │  (patch ant.)  │
+              │  — bench test  │                        │   5V powered   │
+              │    only —      │                        └────────────────┘
+              └────────────────┘
 
-       |                  Teensy 4.1 Board                     |
-       |                                                       |
-       |  [USB]    (3.3V)  (GND)   (Pin 0) (Pin 1)    (Pin 10) |
-       +----+--------+-------+--------+-------+---------+------+
-
-            |        |       |        |       |         |
-            |        |       |        |       |         |
-+-----------+--+     |       |        |       |         |
-
-| USB-C Power  |     |       |        |       |         |
-| (Battery)    |     |       |        |       |         |
-+--------------+     |       |        |       |         |
-
-                     |       |        |       |         |
-   +-----------------+       |        |       |         |
-
-   |                         |        |       |         |
-   |      +------------------+        |       |         |
-   |      |                           |       |         |
-+--+------++                         ++-------++        |
-
-|  (VIN)   |                         |  (TX)   |        |
-|  (GND)   |                         |  (RX)   |        |
-|          |                         |         |        |
-| Push     |                         | GPS     |        |
-| Button   |                         | Module  |        |
-+----------+                         +---------+        |
-                                                        |
-                                                        |
-+-------------------------------------------------------+--+
-
-|               Teensy Audio Adaptor Board                 |
-|                                                          |
-|   [ 3.5mm Audio Jack ] <--- (Plugs directly on top)      |
-|   [ MicroSD Card Slot ]                                  |
-+----------------------------------------------------------+
+  Charging (GROUND ONLY, device OFF, NOT in flight):
+     Wall/USB charger ──► barrel jack ──► battery charger circuit
+     (No connection to aircraft power at any time.)
 ```
+
+**Key differences from the original design:**
+- Powered **only** from an internal battery in flight; no cigarette/ship-bus
+  connection, no shared airframe ground.
+- Audio path shown **isolated** and **per-person** (one headset, one device) —
+  not tapped into a shared intercom. The isolation block is a placeholder.
+- GPS powered from **5V**, not the Teensy 3.3V regulator.
+- **Two** trigger buttons (yoke + observer), both added by us, neither tapping
+  aircraft PTT.
+- Removable mounting; no permanent installation.
+
 ---
 
-## 2. Component Specification & Cost Breakdown
+## 3. Bill of Materials (prototype)
 
-| Component Name | Operational Purpose | Approx. Cost |
-| :--- | :--- | :--- |
-| **Teensy 4.1 Development Board** | Main processor equipped with an onboard high-speed SD card slot. | \$35.00 |
-| **Teensy Audio Adaptor Shield** | Rev D breakout board adding a 3.5mm stereo headset microphone jack. | \$15.00 |
-| **Adafruit Ultimate GPS Breakout** | V3 module with patch antenna tracking live NMEA string metrics. | \$30.00 |
-| **CR1220 Coin Cell Battery** | Populates GPS clock memory for instant satellite time sync locks. | \$2.00 |
-| **Momentary Push Button** | Weatherproof cockpit button switch used as an audio interrupt trigger. | \$5.00 |
-| **SPDT Toggle Switch** | Heavy-duty toggle selector mapping Plane Power vs. Internal Battery. | \$3.00 |
-| **4xAA Battery Holder enclosure** | Delivers standalone battery operations exceeding 8 continuous hours. | \$5.00 |
-| **5V Buck Converter Module** | Steps variable plane cigarette lines down to a clean, filtered 5V supply. | \$5.00 |
-| **2.1mm Chassis Barrel Jack** | Threaded component through the box wall for remote plane charging cords. | \$3.00 |
-| **12V Cigarette Adapter Cord** | Standard cockpit accessory line connecting plane bus grids to 2.1mm inputs. | \$7.00 |
-| **Flanged ABS Project Enclosure** | Drillable protective shell box allowing permanent cockpit anchoring. | \$8.00 |
-| **Net Cost Estimate** | | **~\$118.00** |
+| Component | Purpose | Notes | Approx. Cost |
+| :--- | :--- | :--- | :--- |
+| Teensy 4.1 | Main processor + built-in microSD | | \$35 |
+| Teensy Audio Adaptor (Rev D) | SGTL5000 codec, mic in / headphone out | Stacks on Teensy | \$15 |
+| GPS module (u-blox NEO-M8 **or** Adafruit Ultimate GPS) | Position + time | u-blox preferred for reliable 5–10 Hz; MTK3339 works at 1–5 Hz | \$30–40 |
+| CR1220 coin cell | GPS almanac backup (faster fix) | Not the Teensy RTC | \$2 |
+| microSD card (good quality, e.g. A1/A2) | Storage | Cheap cards drop audio; buy a known-good brand | \$10 |
+| 2 × momentary push buttons | Yoke + observer triggers | Wire to GND, use INPUT_PULLUP | \$10 |
+| NiMH AA battery pack (e.g. 4×AA) + holder | Isolated flight power | With inline fuse | \$8 |
+| Low-dropout 5V regulator/boost as needed | Clean 5V from pack | Match to pack voltage | \$5 |
+| Battery protection / fuse | Safety | | \$3 |
+| USB or barrel-jack charger circuit | **Ground charging only** | Never connected in flight | \$8 |
+| 2 × status LEDs + 220 Ω resistors | Green=lock, Red=rec/err | | \$2 |
+| **Audio isolation transformers (600:600 Ω) or isolated interface** | **Galvanic isolation of headset audio** | ***Placeholder — reviewer must specify correct GA headset interface, mic bias, levels, and isolation*** | TBD |
+| GA headset connectors (PJ-055 / PJ-068) **or** in-line adapter | Interface to aviation headset | ***Reviewer to confirm; consumer 3.5 mm is NOT the GA standard*** | TBD |
+| ABS enclosure (removable mount) | Housing | No permanent airframe anchoring | \$8 |
+| **Est. subtotal (excl. TBD audio-interface items)** | | | **~\$135** |
+
+> The **audio interface and isolation** line items are intentionally left as
+> "TBD / reviewer-specified." This is the highest-risk part of the build and the
+> part most likely to be wrong if guessed. Do not finalize it without expert input.
+
 ---
 
+## 4. Wiring guide (prototype)
 
-## 3. Pin Connection Matrix & Wiring Guide
+1. **Stack the Audio Adaptor** onto the Teensy 4.1 with headers. Use the Audio
+   Adaptor's own microSD slot **or** the Teensy's built-in slot — the firmware
+   uses `BUILTIN_SDCARD` (the Teensy 4.1 onboard slot).
+2. **GPS module:**
+   - GPS `VIN` → **5V** (not 3.3V)
+   - GPS `GND` → Teensy `GND`
+   - GPS `TX`  → Teensy **Pin 0 (RX1)**
+   - GPS `RX`  → Teensy **Pin 1 (TX1)**
+   *(Cross-over: the module's TX goes to the Teensy's RX. Verify against the
+   Teensy 4.1 pinout card — Serial1 is RX1=pin 0, TX1=pin 1.)*
+3. **Buttons:**
+   - Yoke button: one leg → **Pin 10**, other leg → `GND`
+   - Observer button: one leg → **Pin 9**, other leg → `GND`
+   *(Both use internal pull-ups; pressed = LOW. Only one is needed for a
+   single-user device, but both inputs are supported.)*
+4. **LEDs:**
+   - Green LED anode → **Pin 2** via 220 Ω; cathode → `GND` (GPS lock)
+   - Red LED anode → **Pin 3** via 220 Ω; cathode → `GND` (recording / error)
+5. **Power:** Battery pack → 5V regulator → Teensy `VIN`. Common ground within
+   the device only. **No wire leaves the enclosure to aircraft power in flight.**
+6. **Audio:** *Left to the reviewer.* Do not connect to an aircraft headset/
+   intercom until the isolated interface is specified and approved.
 
-1. **Stack Audio Shield Layer**: Solder header pin strips straight down onto your Teensy 4.1. Mount the Teensy Audio Adaptor Shield directly down onto those matching header pins.
-2. **GPS Module Wiring**: Connect four jumper leads across the components:
-   * VIN on GPS Breakout ---> 3.3V pin on Teensy 4.1
-   * GND on GPS Breakout ---> Any available GND pin on Teensy 4.1
-   * RX on GPS Breakout ---> Pin 1 (TX1) hardware serial port on Teensy 4.1
-   * TX on GPS Breakout ---> Pin 0 (RX1) hardware serial port on Teensy 4.1
-3. **Status Indicator Layout Hookup**: Mount feedback LEDs inside drilled outer casing holes:
-   * Green LED (Positive leg) ---> Pin 2 through a 220-ohm protective resistor. (GND to short leg).
-   * Red LED (Positive leg) ---> Pin 3 through a 220-ohm protective resistor. (GND to short leg).
-4. **Trigger Mechanism Wiring**: Mount your tactical toggle switch button through the project case. Wire Terminal 1 directly to Pin 10 on your Teensy, and Terminal 2 straight to an available GND terminal pin block.
-5. **Power Safety Configuration**: Wire the outer pins of the SPDT power toggle switch to the positive lines of your Buck Converter output and your AA battery container. Connect the center selector pin to the Teensy VIN port pin. Combine all system ground wires together securely.
+---
 
+## 5. Firmware — usage
 
-## 4. Firmware File Reference
+The firmware is in `hardware.cpp`. It is a **prototype** — expect to fix a
+minor library/version detail on first compile.
 
-The cockpit data logger requires specialized software to manage real-time satellite updates, time-zone alignment, and high-speed audio writes simultaneously. This code is managed in a separate file within this repository directory named **`hardware.cpp`**.
+1. Install the **Arduino IDE** + **Teensyduino**.
+2. Install libraries via Library Manager:
+   - **TinyGPS++** (Mikal Hart) — parses NMEA sentences.
+   - **Teensy Audio Library** (included with Teensyduino).
+3. Open `hardware.cpp`.
+4. Set your timezone: edit `UTC_OFFSET_HOURS` near the top
+   (e.g. `-5` CDT, `-6` CST, `-8` AKDT, `-9` AKST). Note: this is a fixed
+   offset; it does not auto-handle daylight saving.
+5. Optionally set sample rate / mic gain / playback volume constants; **mic gain
+   and volume must be tuned by ear on the bench.**
+6. Connect via USB, click **Upload**. The firmware is reflashable — it is not
+   "burned permanently."
 
-### Usage & Installation
+### LED status
+- **Green solid:** valid GPS fix (recent).
+- **Green off:** no fix / stale fix.
+- **Red solid:** recording in progress.
+- **Red fast blink (won't stop):** fatal SD-card error at startup.
 
-1. **Setup Environment:** Open the **Arduino IDE** on your computer. Ensure you have installed the **Teensyduino** board extension tools so the compiler can speak to the Teensy 4.1 hardware chip.
-2. **Library Requirements:** Open the Arduino Library Manager (`Ctrl + Shift + I` or `Sketch > Include Library > Manage Libraries...`) and download these two dependencies:
-   * **`TinyGPS++`** (By Mikal Hart) — Unpacks raw satellite positional text lines.
-   * **`TimeLib`** (By Michael Margolis) — Manages the aircraft's internal clock matrix.
-3. **Open the Script:** Open the [`hardware.cpp`](./hardware.cpp) file from your local directory inside the Arduino IDE.
-4. **Configure Local Timezone:** Navigate to the top of the file and locate the variable `const int UTC_OFFSET = -5;`. Adjust this integer to match your survey flight corridor parameter mapping rules (e.g., set to `-5` for Central Daylight Time or `-8` for Alaska Daylight Time). This forces the physical hardware to write local tracking seconds past midnight, ensuring an identical timeline lock with your desktop computer app.
-5. **Burn to Device:** Connect your constructed hardware logger box to your computer using a standard micro-USB or USB-C data cable. Click the **Upload Arrow** in the top left corner of the Arduino window to compile the code and burn the firmware permanently into your logger's flash memory banks. Once done, unplug the box; it is fully ready for flight operations!
+---
+
+## 6. Bench test checklist (before anyone talks to avionics)
+
+- [ ] Compiles under Teensyduino.
+- [ ] SD card mounts; `track.csv` created with header row.
+- [ ] Green LED lights when GPS gets a fix (near a window / outside).
+- [ ] Single click starts recording (red on); single click stops (red off).
+- [ ] Recorded file plays in a normal audio player (valid WAV, not raw).
+- [ ] Filename matches local time at moment of press.
+- [ ] Double click plays back the last clip to headphones.
+- [ ] No audio dropouts on a long (several-minute) recording.
+- [ ] Track logs at expected rate with plausible lat/lon/alt.
+- [ ] Runs for the target endurance on a battery charge.
+
+---
+
+## 7. Known limitations / open questions for the expert review
+
+- **Audio isolation & GA headset interface are unspecified** (highest risk).
+- Sub-second timing is estimated from `TinyGPS++` age, not PPS-disciplined.
+  Adequate for nearest-time matching, not for precise sync.
+- Fixed UTC offset (no automatic DST).
+- MTK3339 baud/rate settings are volatile across power cycles (firmware re-sends
+  them each boot); a u-blox module is more robust for a production unit.
+- No low-battery warning yet.
+- No file-system-full handling beyond the red error LED.
